@@ -1,7 +1,5 @@
 Projet Robot pour Atmos Arena :
 
-- À implémenter le mouvement des oreilles 
-
 Pour installer sur Mac : 
 - brew install opencv
 
@@ -13,3 +11,4 @@ Implémentation pour l'instant :
 
 À implémenter :
 - Avoir une mémoire de 15 secondes pour éviter de redire bonjour si individu repasse devant la caméra.
+- À implémenter le mouvement des oreilles 
