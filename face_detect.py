@@ -1,6 +1,8 @@
 import cv2
 import os
 import urllib.request
+from picamera2 import Picamera2
+from flask import Flask, Response
 
 # URL du modèle Haar cascade fourni par OpenCV (visages frontaux)
 CASCADE_URL = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml'
@@ -27,52 +29,72 @@ def ensure_cascade(path=CASCADE_FILENAME):
             print("Échec du téléchargement du cascade:", e)
             raise
 
-def detect_from_camera(scaleFactor=1.1, minNeighbors=5):
-    """
-    Lance la détection en temps réel depuis la webcam.
+app = Flask(__name__)
 
-    Paramètres:
-        scaleFactor (float): paramètre pour detectMultiScale
-        minNeighbors (int): paramètre pour detectMultiScale
-    """
-    ensure_cascade()
-    face_cascade = cv2.CascadeClassifier(CASCADE_FILENAME)
+# Variables globales pour la caméra et la détection
+picam2 = None
+face_cascade = None
+scaleFactor_global = 1.1
+minNeighbors_global = 5
 
-    # Ouvrir la première caméra disponible (index 0).
-    # Avec l'autre caméra, changer le 0 par 1.
-    cap = cv2.VideoCapture(0)
+def generate_frames():
+    """Génère les frames pour le streaming."""
+    global picam2, face_cascade
     previous_face_count = 0
-    if not cap.isOpened():
-        raise RuntimeError("Impossible d'ouvrir la caméra (index 0). Vérifiez la connexion ou les permissions)")
-    print("Appuyez sur 'q' pour quitter")
+
     while True:
-        # Lire une frame
-        ret, frame = cap.read()
-        if not ret:
-            break
-        # Convertir la frame en gris pour la détection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=scaleFactor, minNeighbors=minNeighbors)
+        frame = picam2.capture_array()
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        faces = face_cascade.detectMultiScale(gray, scaleFactor=scaleFactor_global, minNeighbors=minNeighbors_global)
         current_face_count = len(faces)
 
-        # Dessiner les rectangles autour des visages détectés et message
+        # Dessiner les rectangles autour des visages
         for (x, y, w, h) in faces:
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(frame, 'Coucou', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
         if current_face_count > 0 and previous_face_count == 0:
-            print('hi coucou - nouveau visage détecté!')
+            print('Nouveau visage détecté!')
         previous_face_count = current_face_count
 
-        # Afficher la frame annotée
-        cv2.imshow('Camera - Press q to quit', frame)
+        # Encoder en JPEG pour le streaming
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        _, buffer = cv2.imencode('.jpg', frame_bgr)
+        frame_bytes = buffer.tobytes()
 
-        # Attendre 1ms et vérifier si l'utilisateur a appuyé sur 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-    # Libérer la caméra et fermer toutes les fenêtres OpenCV
-    cap.release()
-    cv2.destroyAllWindows()
+@app.route('/')
+def index():
+    return '<h1>Camera Pi</h1><img src="/video" width="640">'
+
+@app.route('/video')
+def video():
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+def detect_from_camera(scaleFactor=1.1, minNeighbors=5):
+    """Lance le serveur de streaming avec détection de visages."""
+    global picam2, face_cascade, scaleFactor_global, minNeighbors_global
+
+    scaleFactor_global = scaleFactor
+    minNeighbors_global = minNeighbors
+
+    ensure_cascade()
+    face_cascade = cv2.CascadeClassifier(CASCADE_FILENAME)
+
+    # Initialiser la caméra Raspberry Pi
+    picam2 = Picamera2()
+    picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+    picam2.start()
+
+    print("Serveur démarré sur http://0.0.0.0:5000")
+    print("Ouvrez cette adresse dans votre navigateur (remplacez par l'IP de la Pi)")
+
+    try:
+        app.run(host='0.0.0.0', port=5000, threaded=True)
+    finally:
+        picam2.stop()
 
 
 if __name__ == '__main__':
