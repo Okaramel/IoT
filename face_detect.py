@@ -1,13 +1,34 @@
 import cv2
 import os
 import urllib.request
-from picamera2 import Picamera2
+import time
 from flask import Flask, Response
 
+# Essayer d'importer GPIO, sinon mode distant (controle via HTTP)
+try:
+    import RPi.GPIO as GPIO
+    REMOTE_MODE = False
+except ImportError:
+    GPIO = None
+    REMOTE_MODE = True
+    import requests
+    print("Mode distant active - les commandes seront envoyees au Pi via HTTP")
+
+# Adresse du serveur de servos sur le Pi (a modifier selon votre config)
+PI_SERVER_URL = "http://creativelab.local:5001"
+
 # URL du modèle Haar cascade fourni par OpenCV (visages frontaux)
-CASCADE_URL = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml'
+CASCADE_URL = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt2.xml'
 # Nom de fichier local pour sauvegarder le cascade après téléchargement
-CASCADE_FILENAME = 'haarcascade_frontalface_default.xml'
+CASCADE_FILENAME = 'haarcascade_frontalface_alt2.xml'
+
+# Configuration des servos pour les oreilles (pins GPIO en mode BOARD)
+SERVO_PIN_LEFT = 12   # Oreille gauche
+SERVO_PIN_RIGHT = 33  # Oreille droite
+
+# Positions des oreilles (angles en degres)
+EARS_DOWN = 90      # Position repos - oreilles basses
+EARS_UP = 30        # Position alerte - oreilles levees
 
 
 def ensure_cascade(path=CASCADE_FILENAME):
@@ -32,19 +53,142 @@ def ensure_cascade(path=CASCADE_FILENAME):
 app = Flask(__name__)
 
 # Variables globales pour la caméra et la détection
-picam2 = None
+camera = None
 face_cascade = None
 scaleFactor_global = 1.1
 minNeighbors_global = 5
 
+# Variables globales pour les oreilles
+pwm_left = None
+pwm_right = None
+ears_are_up = False
+last_face_time = 0
+last_wiggle_time = 0
+EAR_TIMEOUT = 3.0  # Secondes avant de baisser les oreilles
+WIGGLE_COOLDOWN = 5.0  # Secondes minimum entre deux wiggle
+
+
+def angle_to_percent(angle):
+    """Convertit un angle (0-180) en pourcentage PWM."""
+    start = 4
+    end = 12.5
+    ratio = (end - start) / 180
+    return start + (angle * ratio)
+
+
+def init_ears():
+    """Initialise les servos des oreilles."""
+    global pwm_left, pwm_right
+    if REMOTE_MODE:
+        print(f"Mode distant - servos controles via {PI_SERVER_URL}")
+        try:
+            requests.get(f"{PI_SERVER_URL}/ears/down", timeout=2)
+            print("Connexion au Pi OK - oreilles en position repos")
+        except Exception as e:
+            print(f"Attention: impossible de joindre le Pi ({e})")
+        return
+    GPIO.setmode(GPIO.BOARD)
+    GPIO.setwarnings(False)
+    GPIO.setup(SERVO_PIN_LEFT, GPIO.OUT)
+    GPIO.setup(SERVO_PIN_RIGHT, GPIO.OUT)
+    pwm_left = GPIO.PWM(SERVO_PIN_LEFT, 50)
+    pwm_right = GPIO.PWM(SERVO_PIN_RIGHT, 50)
+    pwm_left.start(angle_to_percent(EARS_DOWN))
+    pwm_right.start(angle_to_percent(EARS_DOWN))
+    time.sleep(0.5)
+    # Arreter le signal pour eviter les vibrations
+    pwm_left.ChangeDutyCycle(0)
+    pwm_right.ChangeDutyCycle(0)
+    print("Oreilles initialisees en position repos")
+
+
+def ears_up():
+    """Leve les oreilles - position alerte."""
+    global ears_are_up
+    print("Oreilles levees!")
+    if REMOTE_MODE:
+        try:
+            requests.get(f"{PI_SERVER_URL}/ears/up", timeout=2)
+        except Exception:
+            pass
+        ears_are_up = True
+        return
+    # Mouvement miroir pour un effet naturel
+    pwm_left.ChangeDutyCycle(angle_to_percent(EARS_UP))
+    pwm_right.ChangeDutyCycle(angle_to_percent(180 - EARS_UP))
+    time.sleep(0.3)
+    # Arreter le signal pour eviter les vibrations
+    pwm_left.ChangeDutyCycle(0)
+    pwm_right.ChangeDutyCycle(0)
+    ears_are_up = True
+
+
+def ears_down():
+    """Baisse les oreilles - position repos."""
+    global ears_are_up
+    print("Oreilles baissees")
+    if REMOTE_MODE:
+        try:
+            requests.get(f"{PI_SERVER_URL}/ears/down", timeout=2)
+        except Exception:
+            pass
+        ears_are_up = False
+        return
+    pwm_left.ChangeDutyCycle(angle_to_percent(EARS_DOWN))
+    pwm_right.ChangeDutyCycle(angle_to_percent(EARS_DOWN))
+    time.sleep(0.3)
+    # Arreter le signal pour eviter les vibrations
+    pwm_left.ChangeDutyCycle(0)
+    pwm_right.ChangeDutyCycle(0)
+    ears_are_up = False
+
+
+def wiggle_ears():
+    """Fait bouger les oreilles de facon joyeuse."""
+    global ears_are_up
+    print("Wiggle des oreilles!")
+    if REMOTE_MODE:
+        try:
+            requests.get(f"{PI_SERVER_URL}/ears/wiggle", timeout=2)
+        except Exception:
+            pass
+        ears_are_up = True
+        return
+    for _ in range(2):
+        pwm_left.ChangeDutyCycle(angle_to_percent(60))
+        pwm_right.ChangeDutyCycle(angle_to_percent(120))
+        time.sleep(0.15)
+        pwm_left.ChangeDutyCycle(angle_to_percent(120))
+        pwm_right.ChangeDutyCycle(angle_to_percent(60))
+        time.sleep(0.15)
+    # Arreter le signal apres le wiggle
+    pwm_left.ChangeDutyCycle(0)
+    pwm_right.ChangeDutyCycle(0)
+    ears_up()
+
+
+def cleanup_ears():
+    """Nettoie les ressources GPIO."""
+    ears_down()
+    if REMOTE_MODE:
+        print("Mode distant - pas de GPIO a nettoyer")
+        return
+    time.sleep(0.3)
+    pwm_left.stop()
+    pwm_right.stop()
+    GPIO.cleanup()
+    print("GPIO nettoye")
+
 def generate_frames():
     """Génère les frames pour le streaming."""
-    global picam2, face_cascade
+    global camera, face_cascade, ears_are_up, last_face_time, last_wiggle_time
     previous_face_count = 0
 
     while True:
-        frame = picam2.capture_array()
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        ret, frame = camera.read()
+        if not ret:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=scaleFactor_global, minNeighbors=minNeighbors_global)
         current_face_count = len(faces)
 
@@ -53,13 +197,28 @@ def generate_frames():
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
             cv2.putText(frame, 'Coucou', (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
-        if current_face_count > 0 and previous_face_count == 0:
-            print('Nouveau visage détecté!')
+        # Logique des oreilles
+        if current_face_count > 0:
+            last_face_time = time.time()
+            if previous_face_count == 0:
+                # Nouveau visage - wiggle seulement si cooldown expire
+                if (time.time() - last_wiggle_time) > WIGGLE_COOLDOWN:
+                    print('Nouveau visage détecté!')
+                    wiggle_ears()
+                    last_wiggle_time = time.time()
+                elif not ears_are_up:
+                    ears_up()
+            elif not ears_are_up:
+                ears_up()
+        else:
+            # Plus de visage - verifier timeout pour baisser les oreilles
+            if ears_are_up and (time.time() - last_face_time) > EAR_TIMEOUT:
+                ears_down()
+
         previous_face_count = current_face_count
 
         # Encoder en JPEG pour le streaming
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        _, buffer = cv2.imencode('.jpg', frame_bgr)
+        _, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
 
         yield (b'--frame\r\n'
@@ -74,8 +233,8 @@ def video():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 def detect_from_camera(scaleFactor=1.1, minNeighbors=5):
-    """Lance le serveur de streaming avec détection de visages."""
-    global picam2, face_cascade, scaleFactor_global, minNeighbors_global
+    """Lance le serveur de streaming avec détection de visages et oreilles reactives."""
+    global camera, face_cascade, scaleFactor_global, minNeighbors_global
 
     scaleFactor_global = scaleFactor
     minNeighbors_global = minNeighbors
@@ -83,18 +242,28 @@ def detect_from_camera(scaleFactor=1.1, minNeighbors=5):
     ensure_cascade()
     face_cascade = cv2.CascadeClassifier(CASCADE_FILENAME)
 
-    # Initialiser la caméra Raspberry Pi
-    picam2 = Picamera2()
-    picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
-    picam2.start()
+    # Initialiser les oreilles (servos)
+    init_ears()
 
-    print("Serveur démarré sur http://0.0.0.0:5000")
-    print("Ouvrez cette adresse dans votre navigateur (remplacez par l'IP de la Pi)")
+    # Initialiser la caméra avec OpenCV (compatible legacy camera)
+    camera = cv2.VideoCapture(0)
+    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    if not camera.isOpened():
+        print("Erreur: Impossible d'ouvrir la caméra")
+        cleanup_ears()
+        return
+
+    print("Camera en cours de capture...")
+    print("Serveur démarré sur http://0.0.0.0:5002")
+    print("Les oreilles bougent quand un visage est détecté!")
 
     try:
-        app.run(host='0.0.0.0', port=5000, threaded=True)
+        app.run(host='0.0.0.0', port=5002, threaded=True)
     finally:
-        picam2.stop()
+        camera.release()
+        cleanup_ears()
 
 
 if __name__ == '__main__':
