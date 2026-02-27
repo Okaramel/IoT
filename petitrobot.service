@@ -1,0 +1,18 @@
+[Unit]
+Description=Démarre les fonctions du petit robot
+
+[Service]
+Type=simple
+
+User=creativelab
+Group=creativelab
+Umask=777
+
+ExecStart=python3 /home/creativelab/face_detect.py
+
+Restart=on-failure
+
+TimeoutStopSec=300
+
+[Install]
+WantedBy=multi-user.target
