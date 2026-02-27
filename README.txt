@@ -121,8 +121,9 @@ Page web ne charge pas :
 FICHIERS
 ============================================================
 
-face_detect.py   - Detection de visages + streaming video
-servo_server.py  - Serveur HTTP pour controler les servos (Pi)
+face_detect.py      - Detection de visages + streaming video
+servo_server.py     - Serveur HTTP pour controler les servos (Pi)
+petitrobot.service  - Systemd service à déplacer dans le dossier /etc/systemd/system/ et activer avec "sudo systemctl enable petitrobot"
 
 ============================================================
 IMPLEMENTATION ACTUELLE
