@@ -188,9 +188,8 @@ def generate_frames():
     while True:
         start_time = time.time()
         
-        ret, frame = camera.read()
-        if not ret:
-            continue
+        frame = camera.capture_array()
+        
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         faces = face_cascade.detectMultiScale(gray, scaleFactor=scaleFactor_global, minNeighbors=minNeighbors_global)
         current_face_count = len(faces)
@@ -254,10 +253,6 @@ def detect_from_camera(scaleFactor=1.1, minNeighbors=5):
 
     # Initialiser la caméra avec OpenCV (compatible legacy camera)
     camera = setup_cam()
-    if(camera[0] == "Picamera2"):
-        read_picamera(camera[1])
-    else:
-        camera = camera[1]
 
     print("Camera en cours de capture...")
     print("Serveur démarré sur http://0.0.0.0:5002")
@@ -266,52 +261,30 @@ def detect_from_camera(scaleFactor=1.1, minNeighbors=5):
     try:
         app.run(host='0.0.0.0', port=5002, threaded=True)
     finally:
-        camera.release()
+        camera.stop()
         cleanup_ears()
 
 def setup_cam():
-    camera = cv2.VideoCapture(0)
-    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    camera.set(cv2.CAP_PROP_FPS, 20)
+    cam = Picamera2()
+    fps=10
+    height=480
+    width=640
     
 
-    if not camera.isOpened():
-        cam = Picamera2()
-        config = cam.create_preview_configuration(
-            main={"size": (640, 480)},
-            controls={"FrameRate": 20}
-        )
-        cam.configure(config)
+    config = cam.create_preview_configuration(
+        main={"size": (width, height)},
+        controls={"FrameRate": fps}
+    )
 
-        def preview(request):
-            with MappedArray(request, "main") as m:
-                pass
+    cam.configure(config)
+    cam.start()
 
-        cam.pre_callback = preview
+    print(f"Picamera2 initialisée en {width}x{height} @ {fps} FPS")
 
-        time.sleep(5)
+    return cam
 
-        cam.start(show_preview=True)
-        
-        
 
-        return ["Picamera2",cam]
-    else:
-        return ["Legacy",camera]
 
-def read_picamera(cam):
-    frame = cam.capture_array()
-    height, width, _ = frame.shape
-    middle = (int(width / 2), int(height / 2))
-
-    while True:
-            frame = cam.capture_array()
-            cv2.circle(frame, middle, 10, (255, 0 , 255), -1)
-            cv2.imshow('f', frame)
-            print("ping")
-            cv2.waitKey(1)
-            print("ping")
 
 if __name__ == '__main__':
     # Interface en ligne de commande simple
