@@ -24,8 +24,8 @@ CASCADE_URL = 'https://raw.githubusercontent.com/opencv/opencv/master/data/haarc
 CASCADE_FILENAME = 'haarcascade_frontalface_alt2.xml'
 
 # Configuration des servos pour les oreilles (pins GPIO en mode BOARD)
-SERVO_PIN_LEFT = 12   # Oreille gauche
-SERVO_PIN_RIGHT = 33  # Oreille droite
+SERVO_PIN_LEFT = 33   # Oreille gauche
+SERVO_PIN_RIGHT = 32  # Oreille droite
 
 # Positions des oreilles (angles en degres)
 EARS_DOWN = 90      # Position repos - oreilles basses
